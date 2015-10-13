@@ -59,7 +59,11 @@ class Cholesky(Op):
     def perform(self, node, inputs, outputs):
         x = inputs[0]
         z = outputs[0]
-        z[0] = scipy.linalg.cholesky(x, lower=self.lower).astype(x.dtype)
+        #z[0] = scipy.linalg.cholesky(x, lower=self.lower).astype(x.dtype)
+        import GPy
+        z[0] = GPy.util.linalg.jitchol(x).astype(x.dtype)
+        if not self.lower:
+            z[0] = z[0].T
 
     def grad(self, inputs, gradients):
         return [CholeskyGrad(self.lower)(inputs[0], self(inputs[0]),
@@ -91,6 +95,12 @@ class CholeskyGrad(Op):
         return Apply(self, [x, l, dz], [x.type()])
 
     def perform(self, node, inputs, outputs):
+        _,L, dL = inputs
+        import GPy
+        outputs[0][0] = GPy.util.choleskies.backprop_gradient(dL, L)
+
+
+    def _perform(self, node, inputs, outputs):
         """
         Implements the "reverse-mode" gradient [1]_ for the
         Cholesky factorization of a positive-definite matrix.
@@ -182,6 +192,24 @@ class Solve(Op):
         else:
             rval = scipy.linalg.solve(A, b)
         output_storage[0][0] = rval
+
+    def grad(self, inputs, g_outputs):
+        A, b = inputs
+        gw, = g_outputs
+	Aib = self(A,b) # is this correct re-use?
+	if self.A_structure == 'lower_triangular':
+		Ai_gw = Solve('upper_triangular')(A.T, gw)
+        elif self.A_structure == 'upper_triangular':
+		Ai_gw = Solve('lower_triangular')(A.T, gw)
+	else:
+		Ai_gw = Solve()(A.T, gw)
+	if b.ndim == 1:
+		return [-Ai_gw[:,None]*Aib[None,:], Ai_gw]
+	elif b.ndim == 2:
+		return [-Ai_gw.dot(Aib.T), Ai_gw]
+	else:
+		raise NotImplementedError
+
 
     # computes shape of x where x = inv(A) * b
     def infer_shape(self, node, shapes):
